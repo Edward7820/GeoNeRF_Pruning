@@ -5,13 +5,13 @@ nb_views = 6
 
 ## dataset
 dataset_name = llff
-dtu_path = Path to DTU MVS
-dtu_pre_path = Path to preprocessed DTU MVS
-llff_path = Path to LLFF training scenes (real_iconic_noface)
-ibrnet1_path = Path to IBRNet dataset 1 (ibrnet_collected_1)
-ibrnet2_path = Path to IBRNet dataset 1 (ibrnet_collected_2)
-nerf_path = Path to NeRF dataset (nerf_synthetic)
-llff_test_path = Path to LLFF test scenes (nerf_llff_data)
+dtu_path = /home/edward/datasets/dtu_training/mvs_training/dtu
+dtu_pre_path = /home/edward/datasets/dtu_training/mvs_training/dtu
+llff_path = /home/edward/datasets/real_iconic_noface 
+ibrnet1_path = /home/edward/datasets/ibrnet_collected_1
+ibrnet2_path = /home/edward/datasets/ibrnet_collected_2
+nerf_path = /home/edward/datasets/nerf_synthetic
+llff_test_path = /home/edward/datasets/nerf_llff_data
 scene = None
 
 ### TESTING

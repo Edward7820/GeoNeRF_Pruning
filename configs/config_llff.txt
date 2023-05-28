@@ -5,7 +5,7 @@ nb_views = 9  #### Set to 7 for fine-tuning
 
 ## dataset
 dataset_name = llff
-llff_path = Path to LLFF test scenes (nerf_llff_data)
+llff_path = /home/edward/datasets/nerf_llff_data
 scene = fern
 
 ### TESTING

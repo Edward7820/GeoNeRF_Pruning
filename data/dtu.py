@@ -165,13 +165,15 @@ class DTU_Dataset(Dataset):
         return intrinsics, extrinsics, [depth_min, depth_max]
 
     def read_depth(self, filename, far_bound, noisy_factor=1.0):
+        # print(filename, far_bound)
         depth_h = self.scale_factor * np.array(
             read_pfm(filename)[0], dtype=np.float32
         )
+        # print(depth_h.shape, self.downSample)
         depth_h = cv2.resize(
-            depth_h, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_NEAREST
+            depth_h, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_NEAREST
         )
-
+        # print(depth_h.shape)
         depth_h = cv2.resize(
             depth_h,
             None,
@@ -179,6 +181,7 @@ class DTU_Dataset(Dataset):
             fy=self.downSample * noisy_factor,
             interpolation=cv2.INTER_NEAREST,
         )
+        # print(depth_h.shape)
 
         ## Exclude points beyond the bounds
         depth_h[depth_h > far_bound * 0.95] = 0.0
@@ -192,6 +195,7 @@ class DTU_Dataset(Dataset):
                 fy=1.0 / (2**l),
                 interpolation=cv2.INTER_NEAREST,
             )
+            # print(f"level {l}:", depth[f"level_{l}"].shape)
 
         if self.split == "train":
             cutout = np.ones_like(depth[f"level_2"])

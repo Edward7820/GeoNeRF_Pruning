@@ -1,13 +1,13 @@
 ### INPUT
-expname = scan21_test
+expname = scan3_test
 logdir = ./logs
 nb_views = 9    #### use 9 for both evaluation and fine-tuning
 
 ## dataset
 dataset_name = dtu
-dtu_path = Path to DTU MVS
-dtu_pre_path = Path to preprocessed DTU MVS
-scene = scan21
+dtu_path = /home/edward/datasets/dtu_training/mvs_training/dtu
+dtu_pre_path = /home/edward/datasets/dtu_training/mvs_training/dtu
+scene = scan3
 
 ### TESTING
 chunk = 4096  ### Reduce it to save memory

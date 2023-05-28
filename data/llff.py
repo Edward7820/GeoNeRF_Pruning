@@ -162,6 +162,7 @@ class LLFF_Dataset(Dataset):
             self.image_paths[scan] = sorted(
                 glob.glob(os.path.join(self.root_dir, scan, self.imgs_folder_name, "*"))
             )
+            print(scan, self.image_paths[scan])
             poses_bounds = np.load(
                 os.path.join(self.root_dir, scan, "poses_bounds.npy")
             )  # (N_images, 17)

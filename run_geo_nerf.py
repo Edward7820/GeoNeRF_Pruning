@@ -80,6 +80,7 @@ from data.get_datasets import (
     get_finetuning_dataset,
     get_validation_dataset,
 )
+from utils.prune_utils import *
 
 lpips_fn = lpips.LPIPS(net="vgg")
 
@@ -401,6 +402,8 @@ class GeoNeRF(LightningModule):
             ## Evaluate only on pixels with meaningful ground truth depths
             if depth_available:
                 mask = batch["depths_h"] > 0
+                # print(unpre_imgs.shape, mask.shape)
+                # print(rendered_rgb.shape, rendered_depth.shape)
                 img_gt_masked = (unpre_imgs[0, -1] * mask[0, -1][None]).cpu()
                 rendered_rgb_masked = (rendered_rgb * mask[0, -1][None]).cpu()
             else:
@@ -418,11 +421,12 @@ class GeoNeRF(LightningModule):
                 log["val_psnr"] = mse2psnr(torch.mean(img_err_abs[:, mask_target] ** 2))
             else:
                 log["val_psnr"] = mse2psnr(torch.mean(img_err_abs**2))
+            # print(rendered_rgb_masked.shape, img_gt_masked.shape)
             log["val_ssim"] = ssim(
                 rendered_rgb_masked.permute(1, 2, 0).numpy(),
                 img_gt_masked.permute(1, 2, 0).numpy(),
                 data_range=1,
-                multichannel=True,
+                channel_axis=2,
             )
             log["val_lpips"] = lpips_fn(
                 rendered_rgb_masked[None] * 2 - 1, img_gt_masked[None] * 2 - 1
@@ -534,6 +538,7 @@ class GeoNeRF(LightningModule):
 if __name__ == "__main__":
     torch.set_default_dtype(torch.float32)
     args = config_parser()
+    print(args)
     geonerf = GeoNeRF(args)
 
     ## Checking to logdir to see if there is any checkpoint file to continue with
@@ -549,6 +554,7 @@ if __name__ == "__main__":
         filename="ckpt_step-{step:06d}",
         auto_insert_metric_name=False,
         save_top_k=-1,
+        every_n_train_steps=2000,
     )
 
     ## Setting up a logger
@@ -561,16 +567,25 @@ if __name__ == "__main__":
             id=args.expname,
         )
     elif args.logger == "tensorboard":
+        '''
         logger = loggers.TestTubeLogger(
             save_dir=f"{args.logdir}/{args.dataset_name}/{args.expname}",
             name=args.expname + "_logs",
             debug=False,
             create_git_tag=False,
         )
+        '''
+        logger = loggers.TensorBoardLogger(
+            save_dir = f"{args.logdir}/{args.dataset_name}/{args.expname}",
+            name = args.expname + "_logs",
+        )
+        
     else:
         logger = None
 
     args.use_amp = False if args.eval else True
+    
+    '''
     trainer = Trainer(
         max_steps=args.num_steps,
         callbacks=checkpoint_callback,
@@ -586,6 +601,23 @@ if __name__ == "__main__":
         precision=16 if args.use_amp else 32,
         amp_level="O1",
     )
+    '''
+    
+    trainer = Trainer(
+        accelerator="gpu",
+        devices=[0],
+        num_nodes=1,
+        max_steps=args.num_steps,
+        callbacks=checkpoint_callback,
+        enable_checkpointing=True,
+        logger=logger,
+        num_sanity_val_steps=0,
+        val_check_interval=2000 if args.scene == "None" else 1.0,
+        check_val_every_n_epoch=20 if args.scene != 'None' else 1,
+        benchmark=True,
+        precision=16 if args.use_amp else 32,
+    )
+    # print(f"use depth: {args.use_depth}")
 
     if not args.eval:  ## Train
         if args.scene != "None":  ## Fine-tune
@@ -604,6 +636,7 @@ if __name__ == "__main__":
             ckpt_file = "pretrained_weights/epoch.15.ckpt"
             load_ckpt(geonerf.geo_reasoner, ckpt_file, "model", strict=False)
 
+        print("start training")
         trainer.fit(geonerf)
     else:  ## Eval
         geonerf = GeoNeRF(args)
@@ -616,4 +649,5 @@ if __name__ == "__main__":
         load_ckpt(geonerf.geo_reasoner, ckpt_file, "geo_reasoner")
         load_ckpt(geonerf.renderer, ckpt_file, "renderer")
 
+        print("start evaluation")
         trainer.validate(geonerf)

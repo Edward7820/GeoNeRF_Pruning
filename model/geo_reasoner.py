@@ -43,18 +43,19 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
 from utils.utils import homo_warp
-from inplace_abn import InPlaceABN
+# from inplace_abn import InPlaceABN
 
 
 def get_depth_values(current_depth, n_depths, depth_interval):
-    depth_min = torch.clamp_min(current_depth - n_depths / 2 * depth_interval, 1e-7)
+    # current_depth: (B, 1, h, w)
+    depth_min = torch.clamp_min(current_depth - n_depths / 2 * depth_interval, 1e-7) # (B, 1, h, w)
     depth_values = (
         depth_min
         + depth_interval
         * torch.arange(
             0, n_depths, device=current_depth.device, dtype=current_depth.dtype
-        )[None, :, None, None]
-    )
+        )[None, :, None, None] 
+    ) # (B, D, h, w)
     return depth_values
 
 
@@ -66,7 +67,7 @@ class ConvBnReLU(nn.Module):
         kernel_size=3,
         stride=1,
         pad=1,
-        norm_act=InPlaceABN,
+        norm_act=nn.BatchNorm2d,
     ):
         super(ConvBnReLU, self).__init__()
         self.conv = nn.Conv2d(
@@ -78,9 +79,10 @@ class ConvBnReLU(nn.Module):
             bias=False,
         )
         self.bn = norm_act(out_channels)
-
+        self.relu = nn.ReLU(inplace=True)
+        
     def forward(self, x):
-        return self.bn(self.conv(x))
+        return self.relu(self.bn(self.conv(x)))
 
 
 class ConvBnReLU3D(nn.Module):
@@ -91,7 +93,7 @@ class ConvBnReLU3D(nn.Module):
         kernel_size=3,
         stride=1,
         pad=1,
-        norm_act=InPlaceABN,
+        norm_act=nn.BatchNorm3d,
     ):
         super(ConvBnReLU3D, self).__init__()
         self.conv = nn.Conv3d(
@@ -103,13 +105,14 @@ class ConvBnReLU3D(nn.Module):
             bias=False,
         )
         self.bn = norm_act(out_channels)
+        self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
-        return self.bn(self.conv(x))
+        return self.relu(self.bn(self.conv(x)))
 
 
 class FeatureNet(nn.Module):
-    def __init__(self, norm_act=InPlaceABN):
+    def __init__(self, norm_act=nn.BatchNorm2d):
         super(FeatureNet, self).__init__()
 
         self.conv0 = nn.Sequential(
@@ -159,7 +162,7 @@ class FeatureNet(nn.Module):
 
 
 class CostRegNet(nn.Module):
-    def __init__(self, in_channels, norm_act=InPlaceABN):
+    def __init__(self, in_channels, norm_act=nn.BatchNorm3d):
         super(CostRegNet, self).__init__()
         self.conv0 = ConvBnReLU3D(in_channels, 8, norm_act=norm_act)
 
@@ -233,7 +236,7 @@ class CostRegNet(nn.Module):
 
 
 class CasMVSNet(nn.Module):
-    def __init__(self, num_groups=8, norm_act=InPlaceABN, levels=3, use_depth=False):
+    def __init__(self, num_groups=8, norm_act=nn.BatchNorm3d, levels=3, use_depth=False):
         super(CasMVSNet, self).__init__()
         self.levels = levels  # 3 depth levels
         self.n_depths = [8, 32, 48]
@@ -276,7 +279,7 @@ class CasMVSNet(nn.Module):
             warped_volume = warped_volume.view_as(ref_volume)
             volume_sum = volume_sum + warped_volume  # (B, G, C//G, D, h, w)
 
-        volume = (volume_sum * ref_volume).mean(dim=2) / (V - 1)
+        volume = (volume_sum * ref_volume).mean(dim=2) / (V - 1) # (B, G, D, h, w)
 
         if spikes is None:
             output = volume
@@ -317,13 +320,13 @@ class CasMVSNet(nn.Module):
                 )  # (D)
                 depth_values_l = depth_values_l[None, :, None, None].expand(
                     -1, -1, h, w
-                )
+                ) # (1, D, h, w)
 
                 if self.use_depth:
                     gt_mask = gt_depths > 0
                     sp_idx_float = (
                         gt_mask * (gt_depths - init_depth_min) / (depth_interval_l)
-                    )[:, :, None]
+                    )[:, :, None] # (h, w, 1)
                     spikes = (
                         torch.arange(D).view(1, 1, -1, 1, 1).cuda()
                         == sp_idx_float.floor().long()
@@ -338,7 +341,7 @@ class CasMVSNet(nn.Module):
                 depth_lm1 = F.interpolate(
                     depth_lm1, scale_factor=2, mode="bilinear", align_corners=True
                 )  # (B, 1, h, w)
-                depth_values_l = get_depth_values(depth_lm1, D, depth_interval_l)
+                depth_values_l = get_depth_values(depth_lm1, D, depth_interval_l) # (B, D, h, w)
 
             affine_mats_l = affine_mats[..., l]
             affine_mats_inv_l = affine_mats_inv[..., l]
@@ -374,11 +377,11 @@ class CasMVSNet(nn.Module):
 
             depth_l = (F.softmax(depth_prob, dim=2) * depth_values_l[:, None]).sum(
                 dim=2
-            )
+            ) # (B, 1, h, w)
 
-            v_feat[f"level_{l}"] = v_feat_l
-            depth_maps[f"level_{l}"] = depth_l
-            depth_values[f"level_{l}"] = depth_values_l
+            v_feat[f"level_{l}"] = v_feat_l # (B, 1, D, h, w)
+            depth_maps[f"level_{l}"] = depth_l # (B, 1, h, w)
+            depth_values[f"level_{l}"] = depth_values_l # (B, D, h, w)
 
         return v_feat, depth_maps, depth_values
 
@@ -391,7 +394,7 @@ class CasMVSNet(nn.Module):
         feats = self.feature(
             imgs.reshape(B * V, 3, H, W)
         )  # (B*V, 8, H, W), (B*V, 16, H//2, W//2), (B*V, 32, H//4, W//4)
-        feats_fpn = feats[f"level_0"].reshape(B, V, *feats[f"level_0"].shape[1:])
+        feats_fpn = feats[f"level_0"].reshape(B, V, *feats[f"level_0"].shape[1:]) # (B, V, 8, H, W)
 
         feats_vol = {"level_0": [], "level_1": [], "level_2": []}
         depth_map = {"level_0": [], "level_1": [], "level_2": []}
@@ -423,8 +426,8 @@ class CasMVSNet(nn.Module):
                 depth_values[f"level_{l}"].append(d_values[f"level_{l}"])
 
         for l in range(3):
-            feats_vol[f"level_{l}"] = torch.stack(feats_vol[f"level_{l}"], dim=1)
-            depth_map[f"level_{l}"] = torch.cat(depth_map[f"level_{l}"], dim=1)
+            feats_vol[f"level_{l}"] = torch.stack(feats_vol[f"level_{l}"], dim=1) # (B, V, D, H, W)
+            depth_map[f"level_{l}"] = torch.cat(depth_map[f"level_{l}"], dim=1) # (B, V, H, W)
             depth_values[f"level_{l}"] = torch.stack(depth_values[f"level_{l}"], dim=1)
 
         return feats_vol, feats_fpn, depth_map, depth_values
