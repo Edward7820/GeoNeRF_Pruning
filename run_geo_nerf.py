@@ -58,6 +58,7 @@ import numpy as np
 import imageio
 import lpips
 from skimage.metrics import structural_similarity as ssim
+import math
 
 from model.geo_reasoner import CasMVSNet
 from model.self_attn_renderer import Renderer
@@ -89,12 +90,15 @@ class GeoNeRF(LightningModule):
         super(GeoNeRF, self).__init__()
         self.hparams.update(vars(hparams))
         self.wr_cntr = 0
+        self.epoch = 0
 
         self.depth_loss = SL1Loss()
         self.learning_rate = hparams.lrate
 
         # Create geometry_reasoner and renderer models
         self.geo_reasoner = CasMVSNet(use_depth=hparams.use_depth).cuda()
+        for idx, m in enumerate(self.geo_reasoner.feature.modules()):
+            print(idx, '->', m)
         self.renderer = Renderer(
             nb_samples_per_ray=hparams.nb_coarse + hparams.nb_fine
         ).cuda()
@@ -162,6 +166,30 @@ class GeoNeRF(LightningModule):
         nb_views = self.hparams.nb_views
         H, W = batch["images"].shape[-2:]
         H, W = int(H), int(W)
+        if batch_nb == 0:
+            self.epoch += 1
+        steps = (self.epoch-1) * 11507 + batch_nb
+
+        if steps == 0:
+            cfg_mask = None
+            self.prev_model = None
+            if args.grow_prune:
+                cfg_mask, self.prev_model = init_channel_mask(self.geo_reasoner.feature, args.channel_sparsity - args.init_channel_ratio)
+                apply_channel_mask(self.geo_reasoner.feature, cfg_mask)
+                print('apply init. mask to 2D feature net | detect channel zero: {}'.format(detect_channel_zero(self.geo_reasoner.feature)))
+
+
+        if args.grow_prune:
+            if steps >= 1 and steps <= args.num_steps and steps % args.delta_T == 0:
+                channel_ratio = args.init_channel_ratio * (1 + cos(math.pi * steps / (args.num_steps))) / 2 
+                layer_ratio_down = get_layer_ratio(self.geo_reasoner.feature, args.channel_sparsity)
+                layer_ratio_up = get_layer_ratio(self.geo_reasoner.feature, args.channel_sparsity - channel_ratio)
+                print('layer ratio up:', layer_ratio_up)
+                print('layer ratio down:', layer_ratio_down)
+                cfg_mask, self.prev_model = IS_update_channel_mask(self.geo_reasoner.feature, layer_ratio_up, layer_ratio_down, self.prev_model)
+                apply_channel_mask(self.geo_reasoner.feature, cfg_mask)
+                print('apply updated mask to 2D feature net | detect channel zero: {}'.format(detect_channel_zero(self.geo_reasoner.feature)))
+
 
         ## Inferring Geometry Reasoner
         feats_vol, feats_fpn, depth_map, depth_values = self.geo_reasoner(

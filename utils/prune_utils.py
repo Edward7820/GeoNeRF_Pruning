@@ -8,16 +8,22 @@ from math import cos, pi
 from copy import deepcopy
 import sys
 import torch.nn.functional as F
-from image_classification.compute_flops import print_model_param_flops
+# from image_classification.compute_flops import print_model_param_flops
 import sklearn.gaussian_process as gp
 from scipy.stats import norm
 from scipy.optimize import minimize
-from . import logger as log
+# from . import logger as log
 import time
 from torch.distributions import MultivariateNormal
 from . import utils
 
+l1 = [1]
+l2 = [2,3,4,5,6,7,8]
+l3 = [9,10,11]
+skip = [12,13]
+prev_layers = [None,None,1,2,3,4,5,6,7,8,5,2,(9,10),(9,10,11)]
 
+'''
 def get_sobel_kernel(k=3):
     # get range
     range = np.linspace(-(k // 2), k // 2, k)
@@ -90,10 +96,10 @@ def SI_pruning(model, data_loader):
     full_score = [m.squeeze(0).detach().cpu().numpy().tolist() for m in score]
     full_rank = [np.argsort(m) for m in full_score]
 
-    l1 = [2,6,9, 12,16,19,22, 25,29,32,35,38,41, 44,48,51]
-    l2 = (np.asarray(l1)+1).tolist()
-    l3 = (np.asarray(l2)+1).tolist()
-    skip = [5,15,28,47]
+    #l1 = [2,6,9, 12,16,19,22, 25,29,32,35,38,41, 44,48,51]
+    #l2 = (np.asarray(l1)+1).tolist()
+    #l3 = (np.asarray(l2)+1).tolist()
+    #skip = [5,15,28,47]
     layer_id = 1
     score = []
     rank = []
@@ -106,6 +112,7 @@ def SI_pruning(model, data_loader):
                 continue
             layer_id += 1
     return score, rank
+'''
 
 
 def L1_norm(layer):
@@ -145,15 +152,11 @@ def CSS(layer, k):
 
 
 def get_layer_ratio (model, sparsity):
-    l1 = [2,6,9, 12,16,19,22, 25,29,32,35,38,41, 44,48,51]
-    l2 = (np.asarray(l1)+1).tolist()
-    l3 = (np.asarray(l2)+1).tolist()
-    skip = [5,15,28,47]
     total = 0
     bn_count = 1
-    for m in model.module.modules():
+    for m in model.modules():
         if isinstance(m, nn.BatchNorm2d):
-            if bn_count in l1 + l2 + skip:
+            if bn_count in l1 + l2:
                 total += m.weight.data.shape[0]
                 bn_count += 1
                 continue
@@ -161,9 +164,9 @@ def get_layer_ratio (model, sparsity):
     bn = torch.zeros(total)
     index = 0
     bn_count = 1
-    for m in model.module.modules():
+    for m in model.modules():
         if isinstance(m, nn.BatchNorm2d):
-            if bn_count in l1 + l2 + skip:
+            if bn_count in l1 + l2:
                 size = m.weight.data.shape[0]
                 bn[index:(index+size)] = m.weight.data.abs().clone()
                 index += size
@@ -175,9 +178,9 @@ def get_layer_ratio (model, sparsity):
     thre = y[thre_index]
     layer_ratio = []
     bn_count = 1
-    for m in model.module.modules():
+    for m in model.modules():
         if isinstance(m, nn.BatchNorm2d):
-            if bn_count in l1 + l2 + skip:
+            if bn_count in l1 + l2:
                 weight_copy = m.weight.data.abs().clone()
                 mask = weight_copy.gt(thre).float().cuda()
                 layer_ratio.append((mask.shape[0] - torch.sum(mask).item()) / mask.shape[0])
@@ -188,39 +191,31 @@ def get_layer_ratio (model, sparsity):
     
 
 def init_channel_mask(model, ratio): #ratio: ratio of channels to be pruned
-    prev_model = deepcopy(model.module)
-    l1 = [2,6,9, 12,16,19,22, 25,29,32,35,38,41, 44,48,51]
-    l2 = (np.asarray(l1)+1).tolist()
-    l3 = (np.asarray(l2)+1).tolist()
-    skip = [5,15,28,47]
+    prev_model = deepcopy(model)
     layer_id = 1
-    cfg_mask = []
-    for m in model.module.modules():
+    cfg_mask = [None]*15
+    for m in model.modules():
         if isinstance(m, nn.Conv2d):
             out_channels = m.weight.data.shape[0]
-            if layer_id in l1 + l2 + skip:
+            if layer_id in l1 + l2:
                 num_keep = int(out_channels * (1 - ratio))
                 rank = np.argsort(L1_norm(m)) # (out_channels,)
                 arg_max_rev = rank[::-1][:num_keep] # (num_keep, )
                 mask = torch.zeros(out_channels) # (out_channels,)
                 mask[arg_max_rev.tolist()] = 1
-                cfg_mask.append(mask)
+                cfg_mask[layer_id] = mask
                 layer_id += 1
                 continue
             layer_id += 1
     return cfg_mask, prev_model
 
-
+'''
 def update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model, Rank_=None):
 
     # # regrow EMA weight
     # old_model = deepcopy(model.module)
     # ema.copy_to(old_model.parameters())
 
-    l1 = [2,6,9, 12,16,19,22, 25,29,32,35,38,41, 44,48,51]
-    l2 = (np.asarray(l1)+1).tolist()
-    l3 = (np.asarray(l2)+1).tolist()
-    skip = [5,15,28,47]
     layer_id = 1
     idx = 0
     cfg_mask = []
@@ -317,67 +312,56 @@ def update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model, Rank
                 continue
     prev_model = deepcopy(model.module)
     return cfg_mask, prev_model
+'''
 
 
 def apply_channel_mask(model, cfg_mask):
-    l1 = [2,6,9, 12,16,19,22, 25,29,32,35,38,41, 44,48,51]
-    l2 = (np.asarray(l1)+1).tolist()
-    l3 = (np.asarray(l2)+1).tolist()
-    skip = [5,15,28,47]
-    layer_id_in_cfg = 0
+    # layer_id_in_cfg = 0
     conv_count = 1
-    for m in model.module.modules():
+    for m in model.modules():
         if isinstance(m, nn.Conv2d):
             if conv_count in l1:
-                mask = cfg_mask[layer_id_in_cfg].float().cuda()
+                mask = cfg_mask[conv_count].float().cuda()
                 mask = mask.view(m.weight.data.shape[0],1,1,1)
                 m.weight.data.mul_(mask)
-                layer_id_in_cfg += 1
+                # layer_id_in_cfg += 1
                 conv_count += 1
                 continue
             if conv_count in l2:
-                mask = cfg_mask[layer_id_in_cfg].float().cuda()
+                mask = cfg_mask[conv_count].float().cuda()
                 mask = mask.view(m.weight.data.shape[0],1,1,1)
                 m.weight.data.mul_(mask)
-                prev_mask = cfg_mask[layer_id_in_cfg-1].float().cuda()
+                prev_mask = cfg_mask[prev_layers[conv_count]].float().cuda()
                 prev_mask = prev_mask.view(1,m.weight.data.shape[1],1,1)
                 m.weight.data.mul_(prev_mask)
-                layer_id_in_cfg += 1
+                # layer_id_in_cfg += 1
                 conv_count += 1
                 continue
             if conv_count in l3:
-                prev_mask = cfg_mask[layer_id_in_cfg-1].float().cuda()
+                prev_mask = cfg_mask[prev_layers[conv_count]].float().cuda()
                 prev_mask = prev_mask.view(1,m.weight.data.shape[1],1,1)
                 m.weight.data.mul_(prev_mask)
                 conv_count += 1
                 continue
             if conv_count in skip:
-                mask = cfg_mask[layer_id_in_cfg].float().cuda()
-                mask = mask.view(m.weight.data.shape[0],1,1,1)
-                m.weight.data.mul_(mask)
-                layer_id_in_cfg += 1
                 conv_count += 1
                 continue
             conv_count += 1
         elif isinstance(m, nn.BatchNorm2d):
-            if conv_count-1 in l1 + l2 + skip:
-                mask = cfg_mask[layer_id_in_cfg-1].float().cuda()
+            if conv_count-1 in l1 + l2:
+                mask = cfg_mask[conv_count-1].float().cuda()
                 m.weight.data.mul_(mask)
                 m.bias.data.mul_(mask)
                 continue
 
 
 def detect_channel_zero (model):
-    l1 = [2,6,9, 12,16,19,22, 25,29,32,35,38,41, 44,48,51]
-    l2 = (np.asarray(l1)+1).tolist()
-    l3 = (np.asarray(l2)+1).tolist()
-    skip = [5,15,28,47]
     total_zero = 0
     total_c = 0
     conv_count = 1
-    for m in model.module.modules():
+    for m in model.modules():
         if isinstance(m, nn.Conv2d):
-            if conv_count in l1 + l2 + skip:
+            if conv_count in l1 + l2:
                 weight_copy = m.weight.data.abs().clone().cpu().numpy()
                 norm = np.sum(weight_copy, axis=(1,2,3)) # (out_channels,)
                 total_zero += len(np.where(norm == 0)[0])
@@ -395,14 +379,11 @@ def projection_formula(M):
 
 
 def IS_update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model):
-    l1 = [2,6,9, 12,16,19,22, 25,29,32,35,38,41, 44,48,51]
-    l2 = (np.asarray(l1)+1).tolist()
-    l3 = (np.asarray(l2)+1).tolist()
-    skip = [5,15,28,47]
     layer_id = 1
     idx = 0
-    cfg_mask = []
-    for [m, m0] in zip(model.module.modules(), old_model.modules()):
+    cfg_mask = [None]*15
+    copy_indexes = [None]*15
+    for [m, m0] in zip(model.modules(), old_model.modules()):
         if isinstance(m, nn.Conv2d):
             out_channels = m.weight.data.shape[0]
             if layer_id in l1:
@@ -415,6 +396,7 @@ def IS_update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model):
                 freedom = rank[::-1][num_keep:]
                 # restore MRU
                 copy_idx = np.where(L1_norm(m) == 0)[0]
+                copy_indexes[layer_id] = copy_idx
                 w = m0.weight.data[copy_idx.tolist(), :, :, :].clone()
                 m.weight.data[copy_idx.tolist(),:,:,:] = w.clone()
                 # importance sampling
@@ -425,7 +407,7 @@ def IS_update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model):
                 proj = projection_formula(base_weight)
                 candidate = weight_copy[:, freedom.tolist()]
                 candidate_prime = torch.matmul(proj, candidate)
-                sampling_prob = F.softmax(torch.norm(candidate - candidate_prime, dim=0))
+                sampling_prob = F.softmax(torch.norm(candidate - candidate_prime, dim=0), dim=0)
                 if num_free <= 0:
                     grow = np.random.permutation(freedom)[:num_free]
                 else: 
@@ -433,7 +415,7 @@ def IS_update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model):
                 # channel mask
                 mask = torch.zeros(out_channels)
                 mask[selected.tolist() + grow.tolist()] = 1
-                cfg_mask.append(mask)
+                cfg_mask[layer_id] = mask
                 layer_id += 1
                 idx += 1
                 continue
@@ -446,8 +428,9 @@ def IS_update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model):
                 selected = rank[::-1][:num_keep]
                 freedom = rank[::-1][num_keep:]
                 # restore MRU
-                prev_copy_idx = deepcopy(copy_idx)
+                prev_copy_idx = deepcopy(copy_indexes[prev_layers[layer_id]])
                 copy_idx = np.where(L1_norm(m) == 0)[0]
+                copy_indexes[layer_id] = copy_idx
                 w = m0.weight.data[:,prev_copy_idx.tolist(),:,:].clone()
                 m.weight.data[:,prev_copy_idx.tolist(),:,:] = w.clone()
                 w = m0.weight.data[copy_idx.tolist(),:,:,:].clone()
@@ -460,7 +443,7 @@ def IS_update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model):
                 proj = projection_formula(base_weight)
                 candidate = weight_copy[:, freedom.tolist()]
                 candidate_prime = torch.matmul(proj, candidate)
-                sampling_prob = F.softmax(torch.norm(candidate - candidate_prime, dim=0)) # (out_channels-num_keep,)
+                sampling_prob = F.softmax(torch.norm(candidate - candidate_prime, dim=0), dim=0) # (out_channels-num_keep,)
                 if num_free <= 0:
                     grow = np.random.permutation(freedom)[:num_free]
                 else: 
@@ -468,50 +451,24 @@ def IS_update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model):
                 # channel mask
                 mask = torch.zeros(out_channels)
                 mask[selected.tolist() + grow.tolist()] = 1
-                cfg_mask.append(mask)
+                cfg_mask[layer_id] = mask
                 layer_id += 1
                 idx += 1
                 continue
             if layer_id in l3:
+                copy_idx = copy_indexes[prev_layers[layer_id]]
                 w = m0.weight.data[:,copy_idx.tolist(),:,:].clone()
                 m.weight.data[:,copy_idx.tolist(),:,:] = w.clone()
                 layer_id += 1
                 continue
             if layer_id in skip:
                 # number of channels
-                num_keep = int(out_channels*(1-layer_ratio_down[idx]))
-                num_free = int(out_channels*(1-layer_ratio_up[idx])) - num_keep
-                # pruning criterion
-                rank = np.argsort(CSS(m, layer_ratio_down[idx]))
-                selected = rank[::-1][:num_keep]
-                freedom = rank[::-1][num_keep:]
-                # restore MRU
-                copy_idx = np.where(L1_norm(m) == 0)[0]
-                w = m0.weight.data[copy_idx.tolist(), :, :, :].clone()
-                m.weight.data[copy_idx.tolist(),:,:,:] = w.clone()
-                # importance sampling
-                weight_copy = m.weight.data.detach().cpu()
-                weight_copy = weight_copy.view(weight_copy.shape[0], -1)
-                weight_copy = torch.transpose(weight_copy, 0, 1)
-                base_weight = weight_copy[:, selected.tolist()]
-                proj = projection_formula(base_weight)
-                candidate = weight_copy[:, freedom.tolist()]
-                candidate_prime = torch.matmul(proj, candidate)
-                sampling_prob = F.softmax(torch.norm(candidate - candidate_prime, dim=0))
-                if num_free <= 0:
-                    grow = np.random.permutation(freedom)[:num_free]
-                else: 
-                    grow = freedom[np.unique(torch.multinomial(sampling_prob, num_free).numpy())]
-                # channel mask
-                mask = torch.zeros(out_channels)
-                mask[selected.tolist() + grow.tolist()] = 1
-                cfg_mask.append(mask)
                 layer_id += 1
-                idx += 1
                 continue
             layer_id += 1
         elif isinstance(m, nn.BatchNorm2d):
-            if layer_id-1 in l1 +l2 + skip:
+            if layer_id-1 in l1 +l2:
+                copy_idx = copy_indexes[layer_id-1]
                 w = m0.weight.data[copy_idx.tolist()].clone()
                 m.weight.data[copy_idx.tolist()] = w.clone()
                 b = m0.bias.data[copy_idx.tolist()].clone()
@@ -521,7 +478,7 @@ def IS_update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model):
                 rv = m0.running_var[copy_idx.tolist()].clone()
                 m.running_var[copy_idx.tolist()] = rv.clone()
                 continue
-    prev_model = deepcopy(model.module)
+    prev_model = deepcopy(model)
     return cfg_mask, prev_model
 
 

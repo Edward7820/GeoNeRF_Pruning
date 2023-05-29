@@ -43,6 +43,10 @@ def config_parser():
     parser.add_argument("--lrate", type=float, default=5e-4, help="Learning rate")
     parser.add_argument("--warmup_steps", type=int, default=500, help="Gradually warm-up learning rate in optimizer")
     parser.add_argument("--scene", type=str, default="None", help="Scene for fine-tuning")
+    parser.add_argument("--grow_prune",action='store_true',help="whether to apply channel pruning algorithm")
+    parser.add_argument("--channel_sparsity",type=float,default=0.5)
+    parser.add_argument("--init_channel_ratio",type=float,default=0.2)
+    parser.add_argument("--delta_T",type=int,default=5000)
 
     # Rendering options
     parser.add_argument("--chunk", type=int, default=4096, help="Number of rays rendered in parallel")

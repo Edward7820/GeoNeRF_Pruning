@@ -9,3 +9,4 @@ lpips
 kornia
 ipdb
 test-tube
+scikit-learn
