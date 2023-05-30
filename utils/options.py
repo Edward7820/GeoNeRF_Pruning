@@ -44,7 +44,7 @@ def config_parser():
     parser.add_argument("--warmup_steps", type=int, default=500, help="Gradually warm-up learning rate in optimizer")
     parser.add_argument("--scene", type=str, default="None", help="Scene for fine-tuning")
     parser.add_argument("--grow_prune",action='store_true',help="whether to apply channel pruning algorithm")
-    parser.add_argument("--channel_sparsity",type=float,default=0.5)
+    parser.add_argument("--channel_sparsity",type=float,default=0.25)
     parser.add_argument("--init_channel_ratio",type=float,default=0.2)
     parser.add_argument("--delta_T",type=int,default=5000)
 
@@ -59,5 +59,6 @@ def config_parser():
     parser.add_argument("--logdir", type=str, default="./logs/", help="Where to store ckpts and logs")
     parser.add_argument("--eval", action="store_true", help="Render and evaluate the test set")
     parser.add_argument("--use_depth", action="store_true", help="Use ground truth low-res depth maps in rendering process")
+    parser.add_argument("--pretrained_weights", type=str, default="pretrained_weights/pretrained.ckpt")
 
     return parser.parse_args()

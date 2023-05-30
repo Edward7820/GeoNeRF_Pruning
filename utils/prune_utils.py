@@ -23,6 +23,15 @@ l3 = [9,10,11]
 skip = [12,13]
 prev_layers = [None,None,1,2,3,4,5,6,7,8,5,2,(9,10),(9,10,11)]
 
+l1_3d = [1]
+l2_3d = [2,3,4,5,6,7,8,9,10]
+l3_3d = [11,12]
+skip_3d = [13]
+prev_layers_3d = [None,None,1,2,3,4,5,6,7,(5,8),(3,9),(1,10),(1,10),11]
+conv_3d_layers = [1,2,3,4,5,6,7,11,12,13]
+trans_conv_3d_layers = [8,9,10]
+pair_layers = {5:8,3:9,1:10,10:1,9:3,8:5}
+
 '''
 def get_sobel_kernel(k=3):
     # get range
@@ -117,7 +126,12 @@ def SI_pruning(model, data_loader):
 
 def L1_norm(layer):
     weight_copy = layer.weight.data.abs().clone().cpu().numpy()
-    norm = np.sum(weight_copy, axis=(1,2,3))
+    if len(weight_copy.shape) == 4:
+        norm = np.sum(weight_copy, axis=(1,2,3))
+    elif len(weight_copy.shape) == 5:
+        norm = np.sum(weight_copy, axis=(1,2,3,4))
+    else:
+        assert 0
     return norm
 
 
@@ -161,9 +175,17 @@ def get_layer_ratio (model, sparsity):
                 bn_count += 1
                 continue
             bn_count += 1
+        if isinstance(m, nn.BatchNorm3d):
+            if bn_count in l1_3d + l2_3d:
+                if bn_count in pair_layers and pair_layers[bn_count] < bn_count:
+                    pass
+                else:
+                    total += m.weight.data.shape[0]
+            bn_count += 1
     bn = torch.zeros(total)
     index = 0
     bn_count = 1
+    indexes = [0]*20
     for m in model.modules():
         if isinstance(m, nn.BatchNorm2d):
             if bn_count in l1 + l2:
@@ -172,6 +194,19 @@ def get_layer_ratio (model, sparsity):
                 index += size
                 bn_count += 1
                 continue
+            bn_count += 1
+        if isinstance(m, nn.BatchNorm3d):
+            if bn_count in l1_3d + l2_3d:
+                if bn_count in pair_layers and pair_layers[bn_count] < bn_count:
+                    size = m.weight.data.shape[0]
+                    my_index = indexes[pair_layers[bn_count]]
+                    bn[my_index:(my_index+size)] += m.weight.data.abs().clone()
+                    bn[my_index:(my_index+size)] = bn[my_index:(my_index+size)]/2
+                else:
+                    size = m.weight.data.shape[0]
+                    bn[index:(index+size)] = m.weight.data.abs().clone()
+                    indexes[bn_count] = index
+                    index += size
             bn_count += 1
     y, i = torch.sort(bn)
     thre_index = int(total * sparsity)
@@ -187,6 +222,16 @@ def get_layer_ratio (model, sparsity):
                 bn_count += 1
                 continue
             bn_count += 1
+    all_bn_3d = [None] + list(filter(lambda m: isinstance(m,nn.BatchNorm3d), model.modules()))
+    for bn_count, m in enumerate(all_bn_3d):
+        if bn_count in l1_3d + l2_3d:
+            if bn_count in pair_layers:
+                pair_m = all_bn_3d[pair_layers[m]]
+                weight_copy = (m.weight.data.abs().clone()+pair_m.weight.data.abs().clone())/2
+            else:
+                weight_copy = m.weight.data.abs().clone()
+            mask = weight_copy.gt(thre).float().cuda()
+            layer_ratio.append((mask.shape[0] - torch.sum(mask).item()) / mask.shape[0])
     return layer_ratio
     
 
@@ -207,6 +252,12 @@ def init_channel_mask(model, ratio): #ratio: ratio of channels to be pruned
                 layer_id += 1
                 continue
             layer_id += 1
+    all_conv3d = [None] + list(filter(lambda m: isinstance(m, nn.Conv3d) or isinstance(m, nn.ConvTranspose3d), model.modules()))
+    for layer_id, m in enumerate(all_conv3d):
+        ## TODO
+        pass
+
+
     return cfg_mask, prev_model
 
 '''

@@ -97,7 +97,7 @@ class GeoNeRF(LightningModule):
 
         # Create geometry_reasoner and renderer models
         self.geo_reasoner = CasMVSNet(use_depth=hparams.use_depth).cuda()
-        for idx, m in enumerate(self.geo_reasoner.feature.modules()):
+        for idx, m in enumerate(self.geo_reasoner.cost_reg_0.modules()):
             print(idx, '->', m)
         self.renderer = Renderer(
             nb_samples_per_ray=hparams.nb_coarse + hparams.nb_fine
@@ -570,11 +570,11 @@ if __name__ == "__main__":
     geonerf = GeoNeRF(args)
 
     ## Checking to logdir to see if there is any checkpoint file to continue with
-    ckpt_path = f"{args.logdir}/{args.dataset_name}/{args.expname}/ckpts"
-    if os.path.isdir(ckpt_path) and len(os.listdir(ckpt_path)) > 0:
-        ckpt_file = os.path.join(ckpt_path, os.listdir(ckpt_path)[-1])
-    else:
-        ckpt_file = None
+    # ckpt_path = f"{args.logdir}/{args.dataset_name}/{args.expname}/ckpts"
+    # if os.path.isdir(ckpt_path) and len(os.listdir(ckpt_path)) > 0:
+    #     ckpt_file = os.path.join(ckpt_path, os.listdir(ckpt_path)[-1])
+    # else:
+    #     ckpt_file = None
 
     ## Setting a callback to automatically save checkpoints
     checkpoint_callback = ModelCheckpoint(
@@ -649,31 +649,42 @@ if __name__ == "__main__":
 
     if not args.eval:  ## Train
         if args.scene != "None":  ## Fine-tune
+            ckpt_file = args.pretrained_weights
+            '''
             if args.use_depth:
                 ckpt_file = "pretrained_weights/pretrained_w_depth.ckpt"
             else:
                 ckpt_file = "pretrained_weights/pretrained.ckpt"
+            '''
             load_ckpt(geonerf.geo_reasoner, ckpt_file, "geo_reasoner")
             load_ckpt(geonerf.renderer, ckpt_file, "renderer")
         elif not args.use_depth:  ## Generalizable
             ## Loading the pretrained weights from Cascade MVSNet
-            torch.utils.model_zoo.load_url(
-                "https://github.com/kwea123/CasMVSNet_pl/releases/download/1.5/epoch.15.ckpt",
-                model_dir="pretrained_weights",
-            )
-            ckpt_file = "pretrained_weights/epoch.15.ckpt"
-            load_ckpt(geonerf.geo_reasoner, ckpt_file, "model", strict=False)
+            if args.pretrained_weights == None:
+                torch.utils.model_zoo.load_url(
+                    "https://github.com/kwea123/CasMVSNet_pl/releases/download/1.5/epoch.15.ckpt",
+                    model_dir="pretrained_weights",
+                )
+                ckpt_file = "pretrained_weights/epoch.15.ckpt"
+                load_ckpt(geonerf.geo_reasoner, ckpt_file, "model", strict=False)
+            else:
+                ckpt_file = args.pretrained_weights
+                load_ckpt(geonerf.geo_reasoner, ckpt_file, "geo_reasoner")
+                load_ckpt(geonerf.renderer, ckpt_file, "renderer")
 
         print("start training")
         trainer.fit(geonerf)
     else:  ## Eval
         geonerf = GeoNeRF(args)
 
-        if ckpt_file is None:
-            if args.use_depth:
-                ckpt_file = "pretrained_weights/pretrained_w_depth.ckpt"
-            else:
-                ckpt_file = "pretrained_weights/pretrained.ckpt"
+        ckpt_file = args.pretrained_weights
+        assert ckpt_file != None
+        '''
+        if args.use_depth:
+            ckpt_file = "pretrained_weights/pretrained_w_depth.ckpt"
+        else:
+            ckpt_file = "pretrained_weights/pretrained.ckpt"
+        '''
         load_ckpt(geonerf.geo_reasoner, ckpt_file, "geo_reasoner")
         load_ckpt(geonerf.renderer, ckpt_file, "renderer")
 
