@@ -5,7 +5,7 @@ nb_views = 9  #### Set to 7 for fine-tuning
 
 ## dataset
 dataset_name = nerf
-nerf_path = Path to NeRF dataset (nerf_synthetic)
+nerf_path = /home/edward/datasets/nerf_synthetic
 scene = lego
 
 ### TESTING
