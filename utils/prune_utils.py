@@ -27,7 +27,7 @@ l1_3d = [1]
 l2_3d = [2,3,4,5,6,7,8,9,10]
 l3_3d = [11,12]
 skip_3d = [13]
-prev_layers_3d = [None,None,1,2,3,4,5,6,7,(5,8),(3,9),(1,10),(1,10),11]
+prev_layers_3d = [None,None,1,2,3,4,5,6,7,5,3,1,1,11]
 conv_3d_layers = [1,2,3,4,5,6,7,11,12,13]
 trans_conv_3d_layers = [8,9,10]
 pair_layers = {5:8,3:9,1:10,10:1,9:3,8:5}
@@ -134,9 +134,9 @@ def L1_norm(layer):
         norm = np.sum(weight_copy, axis=(0,2,3,4))
     else:
         assert 0
-    return norm
+    return norm #(out_channels,)
 
-
+'''
 def Laplacian(layer):
     weight = layer.weight.data.detach()
     x = weight.view(weight.shape[0], -1)
@@ -146,14 +146,19 @@ def Laplacian(layer):
     X_dist = torch.sqrt(X_dist_sq)
     laplace = torch.sum(X_dist, dim=0).cpu().numpy()
     return laplace
-
+'''
+    
 
 def CSS(layer, k):
     '''
     k: pruning rate, i.e. select (1-k)*C columns
     '''
     weight = layer.weight.data.detach()
-    X = weight.view(weight.shape[0], -1)
+    if isinstance(layer, nn.Conv2d) or isinstance(layer, nn.Conv3d):
+        X = weight.view(weight.shape[0], -1)
+    elif isinstance(layer, nn.ConvTranspose3d):
+        weight_t = torch.transpose(weight,0,1)
+        X = weight_t.view(weight_t.shape[0], -1)
     X = torch.transpose(X, 0, 1)
     if X.shape[0] >= X.shape[1]:
         _, _, V = torch.svd(X, some=True)
@@ -163,7 +168,12 @@ def CSS(layer, k):
         return lvs
     else:
         weight_copy = layer.weight.data.abs().clone().cpu().numpy()
-        norm = np.sum(weight_copy, axis=(1,2,3))
+        if isinstance(layer, nn.Conv2d):
+            norm = np.sum(weight_copy, axis=(1,2,3))
+        elif isinstance(layer, nn.Conv3d):
+            norm = np.sum(weight_copy, axis=(1,2,3,4))
+        elif isinstance(layer, nn.ConvTranspose3d):
+            norm = np.sum(weight_copy, axis=(0,2,3,4))
         return norm
 
 
@@ -421,10 +431,38 @@ def apply_channel_mask(model, cfg_mask):
                 m.bias.data.mul_(mask)
                 continue
         elif isinstance(m, nn.Conv3d):
-            ## TODO
+            if conv_count in l1_3d:
+                mask = cfg_mask[conv_count].float().cuda()
+                mask = mask.view(m.weight.data.shape[0],1,1,1,1)
+                m.weight.data.mul_(mask)
+            elif conv_count in l2_3d:
+                mask = cfg_mask[conv_count].float().cuda()
+                mask = mask.view(m.weight.data.shape[0],1,1,1,1)
+                m.weight.data.mul_(mask)
+                prev_mask = cfg_mask[prev_layers_3d[conv_count]].float().cuda()
+                prev_mask = prev_mask.view(1,m.weight.data.shape[1],1,1,1)
+                m.weight.data.mul_(prev_mask)
+            elif conv_count in l3_3d:
+                prev_mask = cfg_mask[prev_layers_3d[conv_count]].float().cuda()
+                prev_mask = prev_mask.view(1,m.weight.data.shape[1],1,1,1)
+                m.weight.data.mul_(prev_mask)
             conv_count += 1
         elif isinstance(m, nn.ConvTranspose3d):
-            ## TODO
+            if conv_count in l1_3d:
+                mask = cfg_mask[conv_count].float().cuda()
+                mask = mask.view(1,m.weight.data.shape[1],1,1,1)
+                m.weight.data.mul_(mask)
+            elif conv_count in l2_3d:
+                mask = cfg_mask[conv_count].float().cuda()
+                mask = mask.view(1,m.weight.data.shape[1],1,1,1)
+                m.weight.data.mul_(mask)
+                prev_mask = cfg_mask[prev_layers_3d[conv_count]].float().cuda()
+                prev_mask = prev_mask.view(m.weight.data.shape[0],1,1,1,1)
+                m.weight.data.mul_(prev_mask)
+            elif conv_count in l3_3d:
+                prev_mask = cfg_mask[prev_layers_3d[conv_count]].float().cuda()
+                prev_mask = prev_mask.view(m.weight.data.shape[0],1,1,1,1)
+                m.weight.data.mul_(prev_mask)
             conv_count += 1
         elif isinstance(m, nn.BatchNorm3d):
             if conv_count-1 in l1_3d + l2_3d:
@@ -446,6 +484,20 @@ def detect_channel_zero (model):
                 total_c += m.weight.data.shape[0]
                 conv_count += 1
                 continue
+            conv_count += 1
+        elif isinstance(m, nn.Conv3d):
+            if conv_count in l1_3d + l2_3d:
+                weight_copy = m.weight.data.abs().clone().cpu().numpy()
+                norm = np.sum(weight_copy, axis=(1,2,3,4)) # (out_channels,)
+                total_zero += len(np.where(norm == 0)[0])
+                total_c += m.weight.data.shape[0]
+            conv_count += 1
+        elif isinstance(m, nn.ConvTranspose3d):
+            if conv_count in l1_3d + l2_3d:
+                weight_copy = m.weight.data.abs().clone().cpu().numpy()
+                norm = np.sum(weight_copy, axis=(0,2,3,4)) # (out_channels,)
+                total_zero += len(np.where(norm == 0)[0])
+                total_c += m.weight.data.shape[1]
             conv_count += 1
     return total_zero / total_c
 
@@ -556,6 +608,10 @@ def IS_update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model):
                 rv = m0.running_var[copy_idx.tolist()].clone()
                 m.running_var[copy_idx.tolist()] = rv.clone()
                 continue
+    all_conv3d = [None] + list(filter(lambda m: isinstance(m, nn.Conv3d) or isinstance(m, nn.ConvTranspose3d), model.modules()))
+    all_bn3d = [None] + list(filter(lambda m: isinstance(m, nn.BatchNorm3d), model.modules()))
+    ## TODO
+    
     prev_model = deepcopy(model)
     return cfg_mask, prev_model
 
