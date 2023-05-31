@@ -30,7 +30,7 @@ skip_3d = [13]
 prev_layers_3d = [None,None,1,2,3,4,5,6,7,5,3,1,1,11]
 conv_3d_layers = [1,2,3,4,5,6,7,11,12,13]
 trans_conv_3d_layers = [8,9,10]
-pair_layers = {5:8,3:9,1:10,10:1,9:3,8:5}
+pair_layers_3d = {5:8,3:9,1:10,10:1,9:3,8:5}
 
 '''
 def get_sobel_kernel(k=3):
@@ -149,16 +149,26 @@ def Laplacian(layer):
 '''
     
 
-def CSS(layer, k):
+def CSS(layer, k, pair_layer = None):
     '''
     k: pruning rate, i.e. select (1-k)*C columns
     '''
     weight = layer.weight.data.detach()
-    if isinstance(layer, nn.Conv2d) or isinstance(layer, nn.Conv3d):
+    if isinstance(layer, nn.ConvTranspose3d):
+        weight = torch.transpose(weight,0,1)
+    if pair_layer != None:
+        pair_weight = pair_layer.weight.data.detach()
+        if isinstance(pair_layer, nn.ConvTranspose3d):
+            pair_weight = torch.transpose(pair_weight,0,1)
+    
+    if pair_layer == None:
         X = weight.view(weight.shape[0], -1)
-    elif isinstance(layer, nn.ConvTranspose3d):
-        weight_t = torch.transpose(weight,0,1)
-        X = weight_t.view(weight_t.shape[0], -1)
+    else:
+        weight1 = weight.view(weight.shape[0],-1)
+        weight2 = pair_weight.view(weight.shape[0],-1)
+        assert weight1.shape[0] == weight2.shape[0]
+        X = torch.cat((weight1, weight2), dim=1)
+
     X = torch.transpose(X, 0, 1)
     if X.shape[0] >= X.shape[1]:
         _, _, V = torch.svd(X, some=True)
@@ -189,7 +199,7 @@ def get_layer_ratio (model, sparsity):
             bn_count += 1
         if isinstance(m, nn.BatchNorm3d):
             if bn_count in l1_3d + l2_3d:
-                if bn_count in pair_layers and pair_layers[bn_count] < bn_count:
+                if bn_count in pair_layers_3d and pair_layers_3d[bn_count] < bn_count:
                     pass
                 else:
                     total += m.weight.data.shape[0]
@@ -209,9 +219,9 @@ def get_layer_ratio (model, sparsity):
             bn_count += 1
         if isinstance(m, nn.BatchNorm3d):
             if bn_count in l1_3d + l2_3d:
-                if bn_count in pair_layers and pair_layers[bn_count] < bn_count:
+                if bn_count in pair_layers_3d and pair_layers_3d[bn_count] < bn_count:
                     size = m.weight.data.shape[0]
-                    my_index = indexes[pair_layers[bn_count]]
+                    my_index = indexes[pair_layers_3d[bn_count]]
                     bn[my_index:(my_index+size)] += m.weight.data.abs().clone()
                     bn[my_index:(my_index+size)] = bn[my_index:(my_index+size)]/2
                 else:
@@ -237,8 +247,8 @@ def get_layer_ratio (model, sparsity):
     all_bn_3d = [None] + list(filter(lambda m: isinstance(m,nn.BatchNorm3d), model.modules()))
     for bn_count, m in enumerate(all_bn_3d):
         if bn_count in l1_3d + l2_3d:
-            if bn_count in pair_layers:
-                pair_m = all_bn_3d[pair_layers[m]]
+            if bn_count in pair_layers_3d:
+                pair_m = all_bn_3d[pair_layers_3d[m]]
                 weight_copy = (m.weight.data.abs().clone()+pair_m.weight.data.abs().clone())/2
             else:
                 weight_copy = m.weight.data.abs().clone()
@@ -272,11 +282,11 @@ def init_channel_mask(model, ratio): #ratio: ratio of channels to be pruned
             out_channels = m.weight.data.shape[1]
         if layer_id in l1_3d + l2_3d:
             num_keep = int(out_channels*(1-ratio))
-            if layer_id not in pair_layers:
+            if layer_id not in pair_layers_3d:
                 rank = np.argsort(L1_norm(m))
                 assert len(rank) == out_channels
             else:
-                pair_m = all_conv3d[pair_layers[m]]
+                pair_m = all_conv3d[pair_layers_3d[m]]
                 rank = np.argsort(L1_norm(m) + L1_norm(pair_m)) 
                 assert len(rank) == out_channels   
             arg_max_rev = rank[::-1][:num_keep]
@@ -511,8 +521,8 @@ def projection_formula(M):
 def IS_update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model):
     layer_id = 1
     idx = 0
-    cfg_mask = [None]*15
-    copy_indexes = [None]*15
+    cfg_mask = [None]*20
+    copy_indexes = [None]*20
     for [m, m0] in zip(model.modules(), old_model.modules()):
         if isinstance(m, nn.Conv2d):
             out_channels = m.weight.data.shape[0]
@@ -609,9 +619,93 @@ def IS_update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model):
                 m.running_var[copy_idx.tolist()] = rv.clone()
                 continue
     all_conv3d = [None] + list(filter(lambda m: isinstance(m, nn.Conv3d) or isinstance(m, nn.ConvTranspose3d), model.modules()))
+    prev_all_conv3d = [None] + list(filter(lambda m: isinstance(m, nn.Conv3d) or isinstance(m, nn.ConvTranspose3d), prev_model.modules()))
     all_bn3d = [None] + list(filter(lambda m: isinstance(m, nn.BatchNorm3d), model.modules()))
+    prev_all_bn3d = [None] + list(filter(lambda m: isinstance(m, nn.BatchNorm3d), prev_model.modules()))
+    assert len(all_conv3d) == len(all_bn3d) + 1
     ## TODO
-    
+    layer_id = 1
+    idx = 0
+    cfg_mask = [None]*20
+    copy_indexes = [None]*20
+    for [m,m0] in zip(all_conv3d, prev_all_conv3d):
+        if isinstance(m, nn.Conv3d):
+            out_channels = m.weight.data.shape[0]
+        else:
+            out_channels = m.weight.data.shape[1]
+        if layer_id in l1_3d:
+            if layer_id in pair_layers_3d and layer_id >= pair_layers_3d[layer_id]:
+                copy_idx = np.where(L1_norm(m) == 0)[0]
+                copy_indexes[layer_id] = copy_idx
+                if isinstance(m, nn.Conv3d):
+                    w = m0.weight.data[copy_idx.tolist(),:,:,:,:].clone()
+                    m.weight.data[copy_idx.tolist(),:,:,:,:] = w.clone()
+                else:
+                    w = m0.weight.data[:,copy_idx.tolist(),:,:,:].clone()
+                    m.weight.data[:,copy_idx.tolist(),:,:,:,:] = w.clone()
+                cfg_mask[layer_id] = cfg_mask[pair_layers_3d[layer_id]].clone()
+                layer_id += 1
+                idx += 1 
+                continue
+
+            # number of channels
+            num_keep = int(out_channels*(1-layer_ratio_down[idx]))
+            num_free = int(out_channels*(1-layer_ratio_up[idx])) - num_keep
+
+            # pruning criterion
+            if layer_id in pair_layers_3d and layer_id < pair_layers_3d[layer_id]:
+                rank = np.argsort(CSS(m, layer_ratio_down[idx], pair_layer=all_conv3d[pair_layers_3d[layer_id]]))
+            else:
+                rank = np.argsort(CSS(m, layer_ratio_down[idx])) # (out_channels,)
+            selected = rank[::-1][:num_keep]
+            freedom = rank[::-1][num_keep:]
+
+            # restore MRU
+            copy_idx = np.where(L1_norm(m) == 0)[0]
+            copy_indexes[layer_id] = copy_idx
+            if isinstance(m, nn.Conv3d):
+                w = m0.weight.data[copy_idx.tolist(),:,:,:,:].clone()
+                m.weight.data[copy_idx.tolist(),:,:,:,:] = w.clone()
+            else:
+                w = m0.weight.data[:,copy_idx.tolist(),:,:,:].clone()
+                m.weight.data[:,copy_idx.tolist(),:,:,:,:] = w.clone()
+
+            # importance sampling 
+            ## TODO: consider pair layers
+            weight_copy = m.weight.data.detach().cpu()
+            if isinstance(m, nn.ConvTranspose3d):
+                weight_copy = torch.transpose(weight_copy,0,1)
+            weight_copy = weight_copy.view(weight_copy.shape[0], -1)
+            weight_copy = torch.transpose(weight_copy, 0, 1)
+            base_weight = weight_copy[:, selected.tolist()]
+            proj = projection_formula(base_weight)
+            candidate = weight_copy[:, freedom.tolist()]
+            candidate_prime = torch.matmul(proj, candidate)
+            sampling_prob = F.softmax(torch.norm(candidate - candidate_prime, dim=0), dim=0)
+            if num_free <= 0:
+                grow = np.random.permutation(freedom)[:num_free]
+            else: 
+                grow = freedom[np.unique(torch.multinomial(sampling_prob, num_free).numpy())]
+
+            # channel mask
+            mask = torch.zeros(out_channels)
+            mask[selected.tolist() + grow.tolist()] = 1
+            cfg_mask[layer_id] = mask
+            layer_id += 1
+            idx += 1
+            continue
+        elif layer_id in l2_3d:
+            ## TODO
+            pass
+        elif layer_id in l3_3d:
+            ## TODO
+            pass
+        elif layer_id in skip:
+            ## TODO
+            pass
+
+        layer_id += 1
+
     prev_model = deepcopy(model)
     return cfg_mask, prev_model
 
