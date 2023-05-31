@@ -126,10 +126,12 @@ def SI_pruning(model, data_loader):
 
 def L1_norm(layer):
     weight_copy = layer.weight.data.abs().clone().cpu().numpy()
-    if len(weight_copy.shape) == 4:
+    if isinstance(layer, nn.Conv2d):
         norm = np.sum(weight_copy, axis=(1,2,3))
-    elif len(weight_copy.shape) == 5:
+    elif isinstance(layer, nn.Conv3d):
         norm = np.sum(weight_copy, axis=(1,2,3,4))
+    elif isinstance(layer, nn.ConvTranspose3d):
+        norm = np.sum(weight_copy, axis=(0,2,3,4))
     else:
         assert 0
     return norm
@@ -254,9 +256,23 @@ def init_channel_mask(model, ratio): #ratio: ratio of channels to be pruned
             layer_id += 1
     all_conv3d = [None] + list(filter(lambda m: isinstance(m, nn.Conv3d) or isinstance(m, nn.ConvTranspose3d), model.modules()))
     for layer_id, m in enumerate(all_conv3d):
-        ## TODO
-        pass
-
+        if isinstance(m, nn.Conv3d):
+            out_channels = m.weight.data.shape[0]
+        else:
+            out_channels = m.weight.data.shape[1]
+        if layer_id in l1_3d + l2_3d:
+            num_keep = int(out_channels*(1-ratio))
+            if layer_id not in pair_layers:
+                rank = np.argsort(L1_norm(m))
+                assert len(rank) == out_channels
+            else:
+                pair_m = all_conv3d[pair_layers[m]]
+                rank = np.argsort(L1_norm(m) + L1_norm(pair_m)) 
+                assert len(rank) == out_channels   
+            arg_max_rev = rank[::-1][:num_keep]
+            mask = torch.zeros(out_channels)
+            mask[arg_max_rev.tolist()] = 1
+            cfg_mask[layer_id] = mask
 
     return cfg_mask, prev_model
 
@@ -404,6 +420,17 @@ def apply_channel_mask(model, cfg_mask):
                 m.weight.data.mul_(mask)
                 m.bias.data.mul_(mask)
                 continue
+        elif isinstance(m, nn.Conv3d):
+            ## TODO
+            conv_count += 1
+        elif isinstance(m, nn.ConvTranspose3d):
+            ## TODO
+            conv_count += 1
+        elif isinstance(m, nn.BatchNorm3d):
+            if conv_count-1 in l1_3d + l2_3d:
+                mask = cfg_mask[conv_count-1].float().cuda()
+                m.weight.data.mul_(mask)
+                m.bias.data.mul_(mask)        
 
 
 def detect_channel_zero (model):
