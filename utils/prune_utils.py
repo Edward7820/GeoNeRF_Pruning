@@ -244,7 +244,7 @@ def get_layer_ratio (model, sparsity):
                 bn_count += 1
                 continue
             bn_count += 1
-    all_bn_3d = [None] + list(filter(lambda m: isinstance(m,nn.BatchNorm3d), model.modules()))
+    all_bn_3d = [None] + list(filter(lambda m: isinstance(m,nn.BatchNorm3d), list(model.modules())))
     for bn_count, m in enumerate(all_bn_3d):
         if bn_count in l1_3d + l2_3d:
             if bn_count in pair_layers_3d:
@@ -274,11 +274,11 @@ def init_channel_mask(model, ratio): #ratio: ratio of channels to be pruned
                 layer_id += 1
                 continue
             layer_id += 1
-    all_conv3d = [None] + list(filter(lambda m: isinstance(m, nn.Conv3d) or isinstance(m, nn.ConvTranspose3d), model.modules()))
+    all_conv3d = [None] + list(filter(lambda m: isinstance(m, nn.Conv3d) or isinstance(m, nn.ConvTranspose3d), list(model.modules())))
     for layer_id, m in enumerate(all_conv3d):
         if isinstance(m, nn.Conv3d):
             out_channels = m.weight.data.shape[0]
-        else:
+        elif isinstance(m, nn.ConvTranspose3d):
             out_channels = m.weight.data.shape[1]
         if layer_id in l1_3d + l2_3d:
             num_keep = int(out_channels*(1-ratio))
@@ -286,7 +286,7 @@ def init_channel_mask(model, ratio): #ratio: ratio of channels to be pruned
                 rank = np.argsort(L1_norm(m))
                 assert len(rank) == out_channels
             else:
-                pair_m = all_conv3d[pair_layers_3d[m]]
+                pair_m = all_conv3d[pair_layers_3d[layer_id]]
                 rank = np.argsort(L1_norm(m) + L1_norm(pair_m)) 
                 assert len(rank) == out_channels   
             arg_max_rev = rank[::-1][:num_keep]
@@ -617,11 +617,12 @@ def IS_update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model):
                 rv = m0.running_var[copy_idx.tolist()].clone()
                 m.running_var[copy_idx.tolist()] = rv.clone()
                 continue
-    all_conv3d = [None] + list(filter(lambda m: isinstance(m, nn.Conv3d) or isinstance(m, nn.ConvTranspose3d), model.modules()))
-    prev_all_conv3d = [None] + list(filter(lambda m: isinstance(m, nn.Conv3d) or isinstance(m, nn.ConvTranspose3d), prev_model.modules()))
-    all_bn3d = [None] + list(filter(lambda m: isinstance(m, nn.BatchNorm3d), model.modules()))
-    prev_all_bn3d = [None] + list(filter(lambda m: isinstance(m, nn.BatchNorm3d), prev_model.modules()))
-    assert len(all_conv3d) == len(all_bn3d) + 1
+    all_conv3d = [None] + list(filter(lambda m: isinstance(m, nn.Conv3d) or isinstance(m, nn.ConvTranspose3d), list(model.modules())))
+    prev_all_conv3d = [None] + list(filter(lambda m: isinstance(m, nn.Conv3d) or isinstance(m, nn.ConvTranspose3d), list(old_model.modules())))
+    all_bn3d = [None] + list(filter(lambda m: isinstance(m, nn.BatchNorm3d), list(model.modules())))
+    prev_all_bn3d = [None] + list(filter(lambda m: isinstance(m, nn.BatchNorm3d), list(old_model.modules())))
+    print(f"{len(all_conv3d)}, {len(all_bn3d)}")
+    assert len(all_conv3d) == len(all_bn3d) + 1, f"{len(all_conv3d)}, {len(all_bn3d)}, {len(list(model.modules()))}"
     layer_id = 1
     idx = 0
     cfg_mask = [None]*20
@@ -629,7 +630,7 @@ def IS_update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model):
     for [m,m0] in zip(all_conv3d, prev_all_conv3d):
         if isinstance(m, nn.Conv3d):
             out_channels = m.weight.data.shape[0]
-        else:
+        elif isinstance(m, nn.ConvTranspose3d):
             out_channels = m.weight.data.shape[1]
         if layer_id in l1_3d:
             if layer_id in pair_layers_3d and layer_id >= pair_layers_3d[layer_id]:
