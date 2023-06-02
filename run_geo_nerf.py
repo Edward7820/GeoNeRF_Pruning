@@ -172,12 +172,24 @@ class GeoNeRF(LightningModule):
 
         if steps == 0:
             cfg_mask = None
-            self.prev_model = None
+            self.prev_feature_net = None
+            self.prev_cost_reg_0 = None
+            self.prev_cost_reg_1 = None
+            self.prev_cost_reg_2 = None
             if args.grow_prune:
-                cfg_mask, self.prev_model = init_channel_mask(self.geo_reasoner.feature, args.channel_sparsity - args.init_channel_ratio)
+                cfg_mask, self.prev_feature_net = init_channel_mask(self.geo_reasoner.feature, args.channel_sparsity - args.init_channel_ratio)
                 apply_channel_mask(self.geo_reasoner.feature, cfg_mask)
                 print('apply init. mask to 2D feature net | detect channel zero: {}'.format(detect_channel_zero(self.geo_reasoner.feature)))
-
+            if args.grow_prune_3d:
+                cfg_mask_0, self.prev_cost_reg_0 = init_channel_mask(self.geo_reasoner.cost_reg_0, args.channel_sparsity - args.iniy_channel_ratio)
+                apply_channel_mask(self.geo_reasoner.cost_reg_0, cfg_mask_0)
+                print('apply init. mask to cost reg 0 | detect channel zero: {}'.format(detect_channel_zero(self.geo_reasoner.cost_reg_0)))
+                cfg_mask_1, self.prev_cost_reg_1 = init_channel_mask(self.geo_reasoner.cost_reg_1, args.channel_sparsity - args.iniy_channel_ratio)
+                apply_channel_mask(self.geo_reasoner.cost_reg_1, cfg_mask_1)
+                print('apply init. mask to cost reg 1 | detect channel zero: {}'.format(detect_channel_zero(self.geo_reasoner.cost_reg_1)))
+                cfg_mask_2, self.prev_cost_reg_2 = init_channel_mask(self.geo_reasoner.cost_reg_2, args.channel_sparsity - args.iniy_channel_ratio)
+                apply_channel_mask(self.geo_reasoner.cost_reg_2, cfg_mask_2)
+                print('apply init. mask to cost reg 2 | detect channel zero: {}'.format(detect_channel_zero(self.geo_reasoner.cost_reg_2)))
 
         if args.grow_prune:
             if steps >= 1 and steps <= args.num_steps and steps % args.delta_T == 0:
@@ -186,10 +198,23 @@ class GeoNeRF(LightningModule):
                 layer_ratio_up = get_layer_ratio(self.geo_reasoner.feature, args.channel_sparsity - channel_ratio)
                 print('layer ratio up:', layer_ratio_up)
                 print('layer ratio down:', layer_ratio_down)
-                cfg_mask, self.prev_model = IS_update_channel_mask(self.geo_reasoner.feature, layer_ratio_up, layer_ratio_down, self.prev_model)
+                cfg_mask, self.prev_feature_net = IS_update_channel_mask(self.geo_reasoner.feature, layer_ratio_up, layer_ratio_down, self.prev_model)
                 apply_channel_mask(self.geo_reasoner.feature, cfg_mask)
                 print('apply updated mask to 2D feature net | detect channel zero: {}'.format(detect_channel_zero(self.geo_reasoner.feature)))
-
+        if args.grow_prune_3d:
+            if steps >= 1 and steps <= args.num_steps and steps % args.delta_T == 0:
+                channel_ratio = args.init_channel_ratio * (1 + cos(math.pi * steps / (args.num_steps))) / 2
+                for level in range(self.geo_reasoner.levels):
+                    cost_reg = (self.geo_reasoner, f"cost_reg_{level}")
+                    layer_ratio_down = get_layer_ratio(cost_reg, args.channel_sparsity)
+                    layer_ratio_up = get_layer_ratio(cost_reg, args.channel_sparsity - channel_ratio)
+                    print('layer ratio up:', layer_ratio_up)
+                    print('layer ratio down:', layer_ratio_down)
+                    prev_cost_reg = getattr(self, f"prev_cost_reg_{level}")
+                    cfg_mask, prev_cost_reg_updated = IS_update_channel_mask(cost_reg, layer_ratio_up, layer_ratio_down, prev_cost_reg)
+                    setattr(self, f"prev_cost_reg_{level}", prev_cost_reg_updated)
+                    apply_channel_mask(cost_reg, cfg_mask)
+                    print('apply updated mask to cost reg {} | detect channel zero: {}'.format(level, detect_channel_zero(cost_reg)))
 
         ## Inferring Geometry Reasoner
         feats_vol, feats_fpn, depth_map, depth_values = self.geo_reasoner(
