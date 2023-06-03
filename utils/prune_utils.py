@@ -32,97 +32,19 @@ conv_3d_layers = [1,2,3,4,5,6,7,11,12,13]
 trans_conv_3d_layers = [8,9,10]
 pair_layers_3d = {5:8,3:9,1:10,10:1,9:3,8:5}
 
-'''
-def get_sobel_kernel(k=3):
-    # get range
-    range = np.linspace(-(k // 2), k // 2, k)
-    # compute a grid the numerator and the axis-distances
-    x, y = np.meshgrid(range, range)
-    sobel_2D_numerator = x
-    sobel_2D_denominator = (x ** 2 + y ** 2)
-    sobel_2D_denominator[:, k // 2] = 1  # avoid division by zero
-    sobel_2D = sobel_2D_numerator / sobel_2D_denominator
-    return sobel_2D
-
-
-class SI(nn.Module):
-    def __init__(self, inp, k_sobel):
-        super(SI, self).__init__()
-
-        self.inp = inp
-        
-        sobel_2D = get_sobel_kernel(k_sobel)
-        sobel_2D_trans = sobel_2D.T
-        sobel_2D = torch.from_numpy(sobel_2D).float().cuda()
-        sobel_2D_trans = torch.from_numpy(sobel_2D_trans).float().cuda()
-        sobel_2D = sobel_2D.unsqueeze(0).repeat(inp,1,1,1)
-        sobel_2D_trans = sobel_2D_trans.unsqueeze(0).repeat(inp,1,1,1)
-        
-        self.vars = nn.ParameterList()
-        self.vars.append(nn.Parameter(sobel_2D, requires_grad=False))
-        self.vars.append(nn.Parameter(sobel_2D_trans, requires_grad=False))
-        
-    def forward(self, x):
-        grad_x = F.conv2d(x, self.vars[0], bias=None, stride=1, padding=1, dilation=1, groups=self.inp)
-        grad_y = F.conv2d(x, self.vars[1], bias=None, stride=1, padding=1, dilation=1, groups=self.inp)
-        value = torch.sqrt(grad_x**2 + grad_y**2)
-        # value = 1/1.4142 * (torch.abs(grad_x) + torch.abs(grad_y))
-        denom = value.shape[2]*value.shape[3]
-        out = torch.sum(value**2, dim=(2,3))/denom - (torch.sum(value, dim=(2,3))/denom)**2
-        return out ** 0.5
-
-
-def SI_pruning(model, data_loader):
-    model = deepcopy(model.module)
-
-    list_conv=[]
-    def conv_hook(self, input, output):
-        SIfeature = SI(output.shape[1], 3)
-        list_conv.append(SIfeature(output))
-
-    def foo(net):
-        childrens = list(net.children())
-        if not childrens:
-            if isinstance(net, torch.nn.Conv2d):
-                net.register_forward_hook(conv_hook)
-            return
-        for c in childrens:
-            foo(c)
-
-    foo(model)
-    with torch.no_grad():
-        for idx, (data, target) in enumerate (data_loader):
-            if idx >= 100:
-                break
-            data, target = Variable(data.cuda()), Variable(target.cuda())
-            model(data)
-            if idx == 0:
-                score = [torch.mean(m, dim=0, keepdim=True) for m in list_conv]
-            else:
-                temp = [torch.mean(m, dim=0, keepdim=True) for m in list_conv]
-                score = [x+y for x, y in zip(score, temp)]
-            list_conv = []
-    full_score = [m.squeeze(0).detach().cpu().numpy().tolist() for m in score]
-    full_rank = [np.argsort(m) for m in full_score]
-
-    #l1 = [2,6,9, 12,16,19,22, 25,29,32,35,38,41, 44,48,51]
-    #l2 = (np.asarray(l1)+1).tolist()
-    #l3 = (np.asarray(l2)+1).tolist()
-    #skip = [5,15,28,47]
-    layer_id = 1
-    score = []
-    rank = []
+def filter_all_conv3d(model):
+    filtered = [None]
     for m in model.modules():
-        if isinstance(m, nn.Conv2d):
-            if layer_id in l1 + l2 + skip:
-                score.append(full_score[layer_id-1])
-                rank.append(full_rank[layer_id-1])
-                layer_id += 1
-                continue
-            layer_id += 1
-    return score, rank
-'''
+        if isinstance(m, nn.Conv3d) or isinstance(m, nn.ConvTranspose3d):
+            filtered.append(m)
+    return filtered
 
+def filter_all_bn3d(model):
+    filtered = [None]
+    for m in model.modules():
+        if isinstance(m, nn.BatchNorm3d):
+            filtered.append(m)
+    return filtered
 
 def L1_norm(layer):
     weight_copy = layer.weight.data.abs().clone().cpu().numpy()
@@ -222,11 +144,11 @@ def get_layer_ratio (model, sparsity):
                 if bn_count in pair_layers_3d and pair_layers_3d[bn_count] < bn_count:
                     size = m.weight.data.shape[0]
                     my_index = indexes[pair_layers_3d[bn_count]]
-                    bn[my_index:(my_index+size)] += m.weight.data.abs().clone()
+                    bn[my_index:(my_index+size)] += m.weight.data.abs().cpu()
                     bn[my_index:(my_index+size)] = bn[my_index:(my_index+size)]/2
                 else:
                     size = m.weight.data.shape[0]
-                    bn[index:(index+size)] = m.weight.data.abs().clone()
+                    bn[index:(index+size)] = m.weight.data.abs().cpu()
                     indexes[bn_count] = index
                     index += size
             bn_count += 1
@@ -244,11 +166,14 @@ def get_layer_ratio (model, sparsity):
                 bn_count += 1
                 continue
             bn_count += 1
-    all_bn_3d = [None] + list(filter(lambda m: isinstance(m,nn.BatchNorm3d), list(model.modules())))
+    all_bn_3d = filter_all_bn3d(model)
+    if len(all_bn_3d) <= 1:
+        assert len(layer_ratio) > 0
+        return layer_ratio
     for bn_count, m in enumerate(all_bn_3d):
         if bn_count in l1_3d + l2_3d:
             if bn_count in pair_layers_3d:
-                pair_m = all_bn_3d[pair_layers_3d[m]]
+                pair_m = all_bn_3d[pair_layers_3d[bn_count]]
                 weight_copy = (m.weight.data.abs().clone()+pair_m.weight.data.abs().clone())/2
             else:
                 weight_copy = m.weight.data.abs().clone()
@@ -274,7 +199,9 @@ def init_channel_mask(model, ratio): #ratio: ratio of channels to be pruned
                 layer_id += 1
                 continue
             layer_id += 1
-    all_conv3d = [None] + list(filter(lambda m: isinstance(m, nn.Conv3d) or isinstance(m, nn.ConvTranspose3d), list(model.modules())))
+    all_conv3d = filter_all_conv3d(model)
+    if len(all_conv3d) <= 1:
+        return cfg_mask, prev_model
     for layer_id, m in enumerate(all_conv3d):
         if isinstance(m, nn.Conv3d):
             out_channels = m.weight.data.shape[0]
@@ -295,111 +222,6 @@ def init_channel_mask(model, ratio): #ratio: ratio of channels to be pruned
             cfg_mask[layer_id] = mask
 
     return cfg_mask, prev_model
-
-'''
-def update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model, Rank_=None):
-
-    # # regrow EMA weight
-    # old_model = deepcopy(model.module)
-    # ema.copy_to(old_model.parameters())
-
-    layer_id = 1
-    idx = 0
-    cfg_mask = []
-    for [m, m0] in zip(model.module.modules(), old_model.modules()):
-        if isinstance(m, nn.Conv2d):
-            out_channels = m.weight.data.shape[0]
-            if layer_id in l1:
-                num_keep = int(out_channels*(1-layer_ratio_down[idx]))
-                num_free = int(out_channels*(1-layer_ratio_up[idx])) - num_keep
-
-                rank = np.argsort(CSS(m, layer_ratio_down[idx]))
-                # rank = np.argsort(L1_norm(m))
-                # rank = Rank_[idx]
-
-                selected = rank[::-1][:num_keep]
-                freedom = rank[::-1][num_keep:]
-                grow = np.random.permutation(freedom)[:num_free]
-                mask = torch.zeros(out_channels)
-                mask[selected.tolist() + grow.tolist()] = 1
-                cfg_mask.append(mask)
-                
-                copy_idx = np.where(L1_norm(m) == 0)[0]
-                w = m0.weight.data[copy_idx.tolist(), :, :, :].clone()
-                m.weight.data[copy_idx.tolist(),:,:,:] = w.clone()
-                
-                layer_id += 1
-                idx += 1
-                continue
-            if layer_id in l2:
-                num_keep = int(out_channels*(1-layer_ratio_down[idx]))
-                num_free = int(out_channels*(1-layer_ratio_up[idx])) - num_keep
-
-                rank = np.argsort(CSS(m, layer_ratio_down[idx]))
-                # rank = np.argsort(L1_norm(m))
-                # rank = Rank_[idx]
-
-                selected = rank[::-1][:num_keep]
-                freedom = rank[::-1][num_keep:]
-                grow = np.random.permutation(freedom)[:num_free]
-                mask = torch.zeros(out_channels)
-                mask[selected.tolist() + grow.tolist()] = 1
-                cfg_mask.append(mask)
-                
-                prev_copy_idx = deepcopy(copy_idx)
-                copy_idx = np.where(L1_norm(m) == 0)[0]
-                w = m0.weight.data[:,prev_copy_idx.tolist(),:,:].clone()
-                m.weight.data[:,prev_copy_idx.tolist(),:,:] = w.clone()
-                w = m0.weight.data[copy_idx.tolist(),:,:,:].clone()
-                m.weight.data[copy_idx.tolist(),:,:,:] = w.clone()
-                
-                layer_id += 1
-                idx += 1
-                continue
-            if layer_id in l3:
-                
-                w = m0.weight.data[:,copy_idx.tolist(),:,:].clone()
-                m.weight.data[:,copy_idx.tolist(),:,:] = w.clone()
-                
-                layer_id += 1
-                continue
-            if layer_id in skip:
-                num_keep = int(out_channels*(1-layer_ratio_down[idx]))
-                num_free = int(out_channels*(1-layer_ratio_up[idx])) - num_keep
-
-                rank = np.argsort(CSS(m, layer_ratio_down[idx]))
-                # rank = np.argsort(L1_norm(m))
-                # rank = Rank_[idx]
-
-                selected = rank[::-1][:num_keep]
-                freedom = rank[::-1][num_keep:]
-                grow = np.random.permutation(freedom)[:num_free]
-                mask = torch.zeros(out_channels)
-                mask[selected.tolist() + grow.tolist()] = 1
-                cfg_mask.append(mask)
-                
-                copy_idx = np.where(L1_norm(m) == 0)[0]
-                w = m0.weight.data[copy_idx.tolist(), :, :, :].clone()
-                m.weight.data[copy_idx.tolist(),:,:,:] = w.clone()
-                
-                layer_id += 1
-                idx += 1
-                continue
-            layer_id += 1
-        elif isinstance(m, nn.BatchNorm2d):
-            if layer_id - 1 in l1 + l2 + skip:
-                w = m0.weight.data[copy_idx.tolist()].clone()
-                m.weight.data[copy_idx.tolist()] = w.clone()
-                b = m0.bias.data[copy_idx.tolist()].clone()
-                m.bias.data[copy_idx.tolist()] = b.clone()
-                rm = m0.running_mean[copy_idx.tolist()].clone()
-                m.running_mean[copy_idx.tolist()] = rm.clone()
-                rv = m0.running_var[copy_idx.tolist()].clone()
-                m.running_var[copy_idx.tolist()] = rv.clone()
-                continue
-    prev_model = deepcopy(model.module)
-    return cfg_mask, prev_model
-'''
 
 
 def apply_channel_mask(model, cfg_mask):
@@ -617,13 +439,20 @@ def IS_update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model):
                 rv = m0.running_var[copy_idx.tolist()].clone()
                 m.running_var[copy_idx.tolist()] = rv.clone()
                 continue
-    all_conv3d = [None] + list(filter(lambda m: isinstance(m, nn.Conv3d) or isinstance(m, nn.ConvTranspose3d), list(model.modules())))
-    prev_all_conv3d = [None] + list(filter(lambda m: isinstance(m, nn.Conv3d) or isinstance(m, nn.ConvTranspose3d), list(old_model.modules())))
-    all_bn3d = [None] + list(filter(lambda m: isinstance(m, nn.BatchNorm3d), list(model.modules())))
-    prev_all_bn3d = [None] + list(filter(lambda m: isinstance(m, nn.BatchNorm3d), list(old_model.modules())))
-    print(f"{len(all_conv3d)}, {len(all_bn3d)}")
+    all_conv3d = filter_all_conv3d(model)
+    prev_all_conv3d = filter_all_conv3d(old_model)
+    all_bn3d = filter_all_bn3d(model)
+    prev_all_bn3d = filter_all_bn3d(old_model)
+    if len(all_conv3d) <= 1:
+        assert len(prev_all_conv3d) <= 1
+        assert len(all_bn3d) <= 1
+        assert len(prev_all_bn3d) <= 1
+        prev_model = deepcopy(model)
+        return cfg_mask, prev_model
+    # print(all_conv3d, all_bn3d)
     assert len(all_conv3d) == len(all_bn3d) + 1, f"{len(all_conv3d)}, {len(all_bn3d)}, {len(list(model.modules()))}"
-    layer_id = 1
+    assert len(prev_all_conv3d) == len(prev_all_bn3d) + 1, f"{len(prev_all_conv3d)}, {len(prev_all_bn3d)}"
+    layer_id = 0
     idx = 0
     cfg_mask = [None]*20
     copy_indexes = [None]*20
@@ -794,9 +623,9 @@ def IS_update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model):
             pass
         layer_id += 1
         
-    layer_id = 1
+    layer_id = 0
     for [m,m0] in zip(all_bn3d, prev_all_bn3d):
-        if layer_id in l1 +l2:
+        if layer_id in l1_3d + l2_3d:
             copy_idx = copy_indexes[layer_id]
             w = m0.weight.data[copy_idx.tolist()].clone()
             m.weight.data[copy_idx.tolist()] = w.clone()

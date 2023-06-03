@@ -205,7 +205,7 @@ class GeoNeRF(LightningModule):
             if steps >= 1 and steps <= args.num_steps and steps % args.delta_T == 0:
                 channel_ratio = args.init_channel_ratio * (1 + cos(math.pi * steps / (args.num_steps))) / 2
                 for level in range(self.geo_reasoner.levels):
-                    cost_reg = (self.geo_reasoner, f"cost_reg_{level}")
+                    cost_reg = getattr(self.geo_reasoner, f"cost_reg_{level}")
                     layer_ratio_down = get_layer_ratio(cost_reg, args.channel_sparsity)
                     layer_ratio_up = get_layer_ratio(cost_reg, args.channel_sparsity - channel_ratio)
                     print('layer ratio up:', layer_ratio_up)
