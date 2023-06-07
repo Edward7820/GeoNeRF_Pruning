@@ -45,9 +45,9 @@ def config_parser():
     parser.add_argument("--scene", type=str, default="None", help="Scene for fine-tuning")
     parser.add_argument("--grow_prune",action='store_true',help="whether to apply channel pruning algorithm to 2D FPN")
     parser.add_argument("--grow_prune_3d",action='store_true',help="whether to apply channel pruning algorithm to 3D CNN")
-    parser.add_argument("--channel_sparsity",type=float,default=0.25)
+    parser.add_argument("--channel_sparsity",type=float,default=0.2)
     parser.add_argument("--init_channel_ratio",type=float,default=0.2)
-    parser.add_argument("--delta_T",type=int,default=5000)
+    parser.add_argument("--delta_T",type=int,default=2500)
 
     # Rendering options
     parser.add_argument("--chunk", type=int, default=4096, help="Number of rays rendered in parallel")

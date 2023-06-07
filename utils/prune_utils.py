@@ -84,10 +84,12 @@ def CSS(layer, k, pair_layer = None):
             pair_weight = torch.transpose(pair_weight,0,1)
     
     if pair_layer == None:
-        X = weight.view(weight.shape[0], -1)
+        X = weight.contiguous().view(weight.contiguous().shape[0], -1)
     else:
-        weight1 = weight.view(weight.shape[0],-1)
-        weight2 = pair_weight.view(weight.shape[0],-1)
+        #print(weight.shape)
+        #print(pair_weight.shape)
+        weight1 = weight.contiguous().view(weight.contiguous().shape[0],-1)
+        weight2 = pair_weight.contiguous().view(pair_weight.contiguous().shape[0],-1)
         assert weight1.shape[0] == weight2.shape[0]
         X = torch.cat((weight1, weight2), dim=1)
 
@@ -162,7 +164,11 @@ def get_layer_ratio (model, sparsity):
             if bn_count in l1 + l2:
                 weight_copy = m.weight.data.abs().clone()
                 mask = weight_copy.gt(thre).float().cuda()
-                layer_ratio.append((mask.shape[0] - torch.sum(mask).item()) / mask.shape[0])
+                mask_sum = torch.sum(mask).item()
+                if mask_sum > 0:
+                    layer_ratio.append((mask.shape[0] - mask_sum) / mask.shape[0])
+                else:
+                    layer_ratio.append((mask.shape[0] - 1) / mask.shape[0])
                 bn_count += 1
                 continue
             bn_count += 1
@@ -178,7 +184,11 @@ def get_layer_ratio (model, sparsity):
             else:
                 weight_copy = m.weight.data.abs().clone()
             mask = weight_copy.gt(thre).float().cuda()
-            layer_ratio.append((mask.shape[0] - torch.sum(mask).item()) / mask.shape[0])
+            mask_sum = torch.sum(mask).item()
+            if mask_sum > 0:
+                layer_ratio.append((mask.shape[0] - mask_sum) / mask.shape[0])
+            else:
+                layer_ratio.append((mask.shape[0] - 1) / mask.shape[0])
     return layer_ratio
     
 
@@ -496,19 +506,23 @@ def IS_update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model):
                 m.weight.data[copy_idx.tolist(),:,:,:,:] = w.clone()
             else:
                 w = m0.weight.data[:,copy_idx.tolist(),:,:,:].clone()
-                m.weight.data[:,copy_idx.tolist(),:,:,:,:] = w.clone()
+                m.weight.data[:,copy_idx.tolist(),:,:,:] = w.clone()
 
             # importance sampling
             weight_copy = m.weight.data.detach().cpu()
             if isinstance(m, nn.ConvTranspose3d):
                 weight_copy = torch.transpose(weight_copy,0,1)
+                # weight_copy = weight_copy.contiguous()
             if layer_id in pair_layers_3d:
                 pair_m = all_conv3d[pair_layers_3d[layer_id]] 
                 pair_weight_copy = pair_m.weight.data.detach().cpu()
                 if isinstance(pair_m, nn.ConvTranspose3d):
                     pair_weight_copy = torch.transpose(pair_weight_copy,0,1)
-                    pair_weight_copy = pair_weight_copy.view(pair_weight_copy.shape[0], -1)
-            weight_copy = weight_copy.view(weight_copy.shape[0], -1)
+                    # pair_weight_copy = pair_weight_copy.contiguous()
+                    # pair_weight_copy = pair_weight_copy.view(pair_weight_copy.shape[0], -1)
+                    pair_weight_copy = torch.reshape(pair_weight_copy, (pair_weight_copy.shape[0],-1))
+            # weight_copy = weight_copy.view(weight_copy.shape[0], -1)
+            weight_copy = torch.reshape(weight_copy, (weight_copy.shape[0], -1))
             if layer_id in pair_layers_3d:
                 weight_copy = torch.cat((weight_copy, pair_weight_copy),dim=1)
             weight_copy = torch.transpose(weight_copy, 0, 1)
@@ -543,7 +557,7 @@ def IS_update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model):
                     w = m0.weight.data[prev_copy_idx.tolist(),:,:,:,:].clone()
                     m.weight.data[prev_copy_idx.tolist(),:,:,:,:] = w.clone()
                     w = m0.weight.data[:,copy_idx.tolist(),:,:,:].clone()
-                    m.weight.data[:,copy_idx.tolist(),:,:,:,:] = w.clone()
+                    m.weight.data[:,copy_idx.tolist(),:,:,:] = w.clone()
                 cfg_mask[layer_id] = cfg_mask[pair_layers_3d[layer_id]].clone()
                 layer_id += 1
                 idx += 1 
@@ -574,7 +588,7 @@ def IS_update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model):
                 w = m0.weight.data[prev_copy_idx.tolist(),:,:,:,:].clone()
                 m.weight.data[prev_copy_idx.tolist(),:,:,:,:] = w.clone()
                 w = m0.weight.data[:,copy_idx.tolist(),:,:,:].clone()
-                m.weight.data[:,copy_idx.tolist(),:,:,:,:] = w.clone()
+                m.weight.data[:,copy_idx.tolist(),:,:,:] = w.clone()
 
             # importance sampling
             weight_copy = m.weight.data.detach().cpu()
@@ -585,8 +599,10 @@ def IS_update_channel_mask(model, layer_ratio_up, layer_ratio_down, old_model):
                 pair_weight_copy = pair_m.weight.data.detach().cpu()
                 if isinstance(pair_m, nn.ConvTranspose3d):
                     pair_weight_copy = torch.transpose(pair_weight_copy,0,1)
-                    pair_weight_copy = pair_weight_copy.view(pair_weight_copy.shape[0], -1)
-            weight_copy = weight_copy.view(weight_copy.shape[0], -1)
+                    # pair_weight_copy = pair_weight_copy.view(pair_weight_copy.shape[0], -1)
+                    pair_weight_copy = torch.reshape(pair_weight_copy, (pair_weight_copy.shape[0],-1))
+            # weight_copy = weight_copy.view(weight_copy.shape[0], -1)
+            weight_copy = torch.reshape(weight_copy, (weight_copy.shape[0],-1))
             if layer_id in pair_layers_3d:
                 weight_copy = torch.cat((weight_copy, pair_weight_copy),dim=1)
             weight_copy = torch.transpose(weight_copy, 0, 1)
